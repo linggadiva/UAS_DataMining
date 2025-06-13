@@ -1,82 +1,95 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
+import pickle
 import plotly.express as px
-from sklearn.cluster import KMeans
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
 
-# --- Load Data ---
-df = pd.read_csv("/DATA/flipkart_com-ecommerce_sample.csv")
+# =====================
+# Load Model dan Data
+# =====================
+@st.cache_data
+def load_models():
+    with open("random_forest_model.pkl", "rb") as f:
+        model = pickle.load(f)
+    with open("scaler.pkl", "rb") as f:
+        scaler = pickle.load(f)
+    return model, scaler
 
-# --- Preprocessing ---
-df_cluster = df[['harga_diskon', 'rating']].copy()
-df_cluster = df_cluster.dropna()
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(df_cluster)
+model, scaler = load_models()
 
-# --- KMeans Clustering ---
-kmeans = KMeans(n_clusters=3, random_state=42)
-df_cluster['cluster'] = kmeans.fit_predict(X_scaled)
+@st.cache_data
+def load_cluster_data():
+    return pd.read_csv("produk_klaster.csv")  # Harus punya kolom: nama_produk, harga, rating, ulasan, kategori, cluster
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="E-Commerce Analytics", layout="wide")
-st.title("📊 Dashboard Produk E-Commerce")
+df_clustered = load_cluster_data()
 
-# Sidebar menu
-menu = st.sidebar.radio("Pilih Halaman", ["Dashboard Klasterisasi", "Prediksi Best Seller", "Rekomendasi Produk"])
+# =====================
+# Sidebar Navigasi
+# =====================
+st.sidebar.title("🧭 Navigasi")
+page = st.sidebar.radio("Menu", ["📊 Dashboard Klaster", "🤖 Prediksi Produk", "📌 Rekomendasi Produk"])
 
-# --- Halaman 1: Klasterisasi Produk ---
-if menu == "Dashboard Klasterisasi":
-    st.header("🔍 Klasterisasi Produk (KMeans)")
-    fig = px.scatter(
-        df_cluster, x='harga_diskon', y='rating', color=df_cluster['cluster'].astype(str),
-        title="Hasil Klasterisasi Produk",
-        labels={'cluster': 'Klaster'},
-        color_discrete_sequence=px.colors.qualitative.Set2
-    )
-    st.plotly_chart(fig, use_container_width=True)
+# =====================
+# 1. Dashboard Klaster
+# =====================
+if page == "📊 Dashboard Klaster":
+    st.title("📊 Dashboard Klasterisasi Produk")
 
-    st.markdown("""
-    **Deskripsi Klaster:**
-    - Klaster 0: Produk harga menengah, rating stabil
-    - Klaster 1: Produk murah & laris (rating tinggi)
-    - Klaster 2: Produk mahal & kurang diminati (rating rendah)
-    """)
+    fig = px.scatter(df_clustered, x="harga", y="rating", color="cluster",
+                     hover_data=["nama_produk", "kategori"],
+                     title="Visualisasi Klaster Produk")
+    st.plotly_chart(fig)
 
-# --- Halaman 2: Prediksi Produk Best Seller ---
-elif menu == "Prediksi Best Seller":
-    st.header("📈 Prediksi Produk Best Seller")
-    with st.form("form_prediksi"):
-        harga_retail = st.number_input("Harga Retail", min_value=0)
-        harga_diskon = st.number_input("Harga Diskon", min_value=0)
-        rating = st.slider("Rating Produk", 0.0, 5.0, step=0.1)
-        submitted = st.form_submit_button("Prediksi")
+    st.subheader("Deskripsi Klaster:")
+    deskripsi = {
+        0: "💎 Klaster 0: Produk premium, harga tinggi, rating tinggi",
+        1: "🔥 Klaster 1: Produk murah dan laris, ulasan banyak",
+        2: "🌱 Klaster 2: Produk baru atau kurang populer",
+    }
+    for cid, desc in deskripsi.items():
+        st.markdown(f"- **Klaster {cid}**: {desc}")
 
-    if submitted:
-        diskon = harga_retail - harga_diskon
-        X_pred = scaler.transform([[harga_diskon, rating]])
-        cluster_pred = kmeans.predict(X_pred)[0]
+# ==========================
+# 2. Prediksi Produk
+# ==========================
+elif page == "🤖 Prediksi Produk":
+    st.title("🤖 Prediksi Produk Best Seller")
 
-        # Logika prediksi sederhana (contoh)
-        if cluster_pred == 1:
-            hasil = "✅ Produk ini berpotensi jadi Best Seller!"
-        else:
-            hasil = "⚠️ Produk ini kurang potensial, coba perbaiki harga/rating."
+    nama = st.text_input("Nama Produk")
+    harga = st.number_input("Harga Produk", 0.0)
+    rating = st.slider("Rating (0-5)", 0.0, 5.0, 4.0)
+    ulasan = st.number_input("Jumlah Ulasan", 0)
+    kategori = st.selectbox("Kategori", sorted(df_clustered["kategori"].unique()))
 
-        st.success(hasil)
+    if st.button("Prediksi"):
+        # Pastikan kategori masuk dalam fitur (jika modelnya pakai kategori string)
+        fitur = pd.DataFrame([[harga, rating, ulasan, kategori]],
+                             columns=["harga", "rating", "ulasan", "kategori"])
 
-# --- Halaman 3: Rekomendasi Produk ---
-elif menu == "Rekomendasi Produk":
-    st.header("💡 Rekomendasi Produk untuk Promosi")
-    df['cluster'] = kmeans.predict(scaler.transform(df[['harga_diskon', 'rating']].fillna(0)))
+        try:
+            fitur_scaled = scaler.transform(fitur.select_dtypes(include=[np.number]))
+            fitur_scaled_df = pd.DataFrame(fitur_scaled, columns=["harga", "rating", "ulasan"])
+            fitur_scaled_df["kategori"] = fitur["kategori"].values
 
-    rekomendasi = df[df['cluster'] == 1].copy()
-    rekomendasi['Insight'] = np.where(
-        rekomendasi['rating'] < 4,
-        "Naikkan rating agar makin laris",
-        "Sudah sesuai klaster best-seller"
-    )
+            pred = model.predict(fitur_scaled_df)[0]
 
-    st.dataframe(rekomendasi[['nama_produk', 'harga_diskon', 'rating', 'Insight']].head(50))
+            if pred == 1:
+                st.success(f"✅ Produk **'{nama}'** diprediksi berpotensi menjadi **Best Seller!**")
+            else:
+                st.warning(f"⚠️ Produk **'{nama}'** diprediksi **bukan** best seller.")
+        except Exception as e:
+            st.error(f"Gagal memproses input: {e}")
+
+# ==========================
+# 3. Rekomendasi Produk
+# ==========================
+elif page == "📌 Rekomendasi Produk":
+    st.title("📌 Rekomendasi Produk Promosi")
+
+    klaster_target = 1  # Klaster produk laris
+    rekomendasi = df_clustered[df_clustered["cluster"] == klaster_target]
+    rekomendasi = rekomendasi.sort_values(by=["rating", "ulasan"], ascending=[False, False])
+
+    st.dataframe(rekomendasi[["nama_produk", "harga", "rating", "ulasan", "kategori"]].head(10))
+
+    st.info("💡 Insight: Produk dalam klaster ini punya rating tinggi dan harga terjangkau. Disarankan promosikan dan tingkatkan ulasan pelanggan.")
