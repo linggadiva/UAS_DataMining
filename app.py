@@ -8,7 +8,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
 # --- Load Data ---
-df = pd.read_csv("flipkart_light.csv")
+df = pd.read_csv("flipkart_com-ecommerce_sample.csv")
 
 # --- Preprocessing ---
 df_cluster = df[['harga_diskon', 'rating']].copy()
